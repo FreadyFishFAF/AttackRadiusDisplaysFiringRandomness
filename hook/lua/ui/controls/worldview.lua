@@ -1,9 +1,11 @@
+local maxSpreadWeaponCached
+
+-- Helper function to calculate the average position of a group of units.
 local function AveragePositionOfUnits(units)
     local unitCount = table.getn(units)
 
-    local px = 0
-    local py = 0
-    local pz = 0
+    local px, py, pz = 0, 0, 0
+
     for k = 1, unitCount do
         local ux, uy, uz = unpack(units[k]:GetPosition())
         px = px + ux
@@ -15,51 +17,57 @@ local function AveragePositionOfUnits(units)
     py = py / unitCount
     pz = pz / unitCount
 
-    return {
-        px,
-        py,
-        pz
-    }
-
+    return { px, py, pz }
 end
 
---- Get the weapon "damage spread", which is how much the weapon's damage spreads out depending on the distance to target
+--- Get the weapon's damage spread, which accounts for both the explosion radius and firing randomness.
+--- The spread increases with distance from the target.
 ---@param weapon WeaponBlueprint
 ---@return number
 local function GetWeaponDamageSpread(weapon)
     local dist = VDist3(AveragePositionOfUnits(GetSelectedUnits()), GetMouseWorldPos())
+
     local weaponMaxRadius = weapon.MaxRadius
     local weaponMinRadius = weapon.MinRadius
+
+    -- Clamp distance to within the weapon's firing radius
     if weaponMinRadius and dist < weaponMinRadius then
         dist = weaponMinRadius
     elseif weaponMaxRadius and dist > weaponMaxRadius then
         dist = weaponMaxRadius
     end
-    return (weapon.DamageRadius or 0) + (weapon.FixedSpreadRadius or (weapon.FiringRandomness or 0) / 12 * dist)
+
+    -- Calculate spread as a combination of damage radius and firing randomness
+    return (weapon.DamageRadius or 0) + (weapon.FixedSpreadRadius or 0) + ((weapon.FiringRandomness or 0) * dist / 10)
 end
 
-local maxSpreadWeaponCached
-
---- Get the maximum damage spread from multiple weapons, and cache the max spread weapon
+-- Helper function to get the maximum damage spread from a set of weapons.
 ---@param weapons WeaponBlueprint[]
 ---@return number
 local function GetMaxDamageSpread(weapons)
     local maxRadius = 0
-    for _, w in weapons do
-        newRad = GetWeaponDamageSpread(w)
-        if newRad > maxRadius then
-            maxRadius = newRad
-            maxSpreadWeaponCached = w
+
+    -- FF Fix, don't know the exact source but I guess some FAF update makes this necessary
+    for key, weaponData in pairs(weapons) do
+        for _, w in pairs(weaponData or {}) do
+            local newRad = GetWeaponDamageSpread(w)
+
+            if newRad > maxRadius then
+                maxRadius = newRad
+                maxSpreadWeaponCached = w
+            end
         end
     end
+
     return maxRadius
 end
 
+-- Helper function to update the scale of the radius decal based on the current weapon's damage spread.
 local function RadiusDecalScaleUpdate()
     return GetWeaponDamageSpread(maxSpreadWeaponCached) * 2
 end
 
---- A generic decal texture / size computation function that uses the damage and spread radius
+--- Override to compute the decal texture and size based on the weapon's damage and spread radius.
 ---@param predicate function<WeaponBlueprint[]>
 ---@return WorldViewDecalData[]
 RadiusDecalFunction = function(predicate)
@@ -69,7 +77,8 @@ RadiusDecalFunction = function(predicate)
 
     if maxRadius > 0 then
         local damageRadius = maxSpreadWeaponCached.DamageRadius
-        local decalData = { }
+        local decalData = {}
+        -- Create decal for damage radius
         if damageRadius > 0 then
             table.insert(decalData,
                 { --Damage radius display
@@ -78,6 +87,7 @@ RadiusDecalFunction = function(predicate)
                 }
             )
         end
+        -- Create decal for inaccuracy if the spread radius differs from damage radius
         if damageRadius ~= maxRadius then
             table.insert(decalData,
                 { --Inaccuracy display
@@ -95,9 +105,10 @@ end
 
 local oldWorldView = WorldView
 
+-- Extension of the WorldView class to handle cursor decals for command actions.
 WorldView = Class(oldWorldView) {
 
-    --- Manages the decals of a cursor event
+    --- Manages the decals of a cursor event based on selection and weapon stats.
     ---@param self WorldView
     ---@param identifier CommandCap
     ---@param enabled boolean
@@ -107,11 +118,13 @@ WorldView = Class(oldWorldView) {
         if enabled then
             if changed then
 
-                -- prepare decals based on the selection
+                -- Prepare decals based on the current selection
                 local data = getDecalsBasedOnSelection()
                 if data then
-                    -- clear out old decals, if they exist
+                    -- Clear out old decals if they exist
                     self.CursorDecalTrash:Destroy();
+
+                    -- Add new decals
                     for k, instance in data do
                         local decal = UserDecal()
                         decal:SetTexture(instance.texture)
@@ -121,7 +134,7 @@ WorldView = Class(oldWorldView) {
                             decal.scaleUpdate = scaleUpdate
                         else
                             local scale = instance.scale
-                            decal:SetScale({scale, 1, scale})
+                            decal:SetScale({ scale, 1, scale })
                         end
 
                         self.CursorDecalTrash:Add(decal);
@@ -130,18 +143,17 @@ WorldView = Class(oldWorldView) {
                 end
             end
 
-            -- update their scale and then locations
+            -- Update their scale and positions
             for k, decal in self.CursorDecalTrash do
                 if decal.scaleUpdate then
                     local scale = decal.scaleUpdate()
-                    decal:SetScale({scale, 1, scale})
+                    decal:SetScale({ scale, 1, scale })
                 end
                 decal:SetPosition(GetMouseWorldPos())
             end
         else
-            -- command ended, destroy the current decals to make room for new decals
+            -- Destroy current decals when command ends
             self.CursorDecalTrash:Destroy();
         end
     end,
-
 }
